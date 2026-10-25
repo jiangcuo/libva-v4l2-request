@@ -39,12 +39,12 @@ sources = [
 	'image.c',
 	'utils.c',
 	'tiled_yuv.S',
+	'tiled_yuv_c.c',
 	'video.c',
 	'media.c',
 	'v4l2.c',
-	'mpeg2.c',
 	'h264.c',
-	'h265.c'
+	'unsupported.c'
 ]
 
 headers = [

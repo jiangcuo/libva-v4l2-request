@@ -52,6 +52,7 @@
 #include <sys/ioctl.h>
 
 #include <linux/videodev2.h>
+#include <h264-ctrls.h>
 
 /* Set default visibility for the init function only. */
 VAStatus __attribute__((visibility("default")))
@@ -178,6 +179,23 @@ VAStatus VA_DRIVER_INIT_FUNC(VADriverContextP context)
 
 	driver_data->video_fd = video_fd;
 	driver_data->media_fd = media_fd;
+	driver_data->v4l2_mplane =
+		(capabilities & V4L2_CAP_VIDEO_M2M_MPLANE) != 0;
+
+	/*
+	 * Programs such as FFmpeg create VA surfaces before they create a
+	 * config, and the driver refuses to change the OUTPUT format once
+	 * the CAPTURE queue owns buffers. The device is still idle here, so
+	 * set the bitstream format now. Dimensions are irrelevant for parsed
+	 * slice formats; the driver picks its own coded size.
+	 */
+	rc = v4l2_set_format(video_fd,
+			     v4l2_type_video_output(driver_data->v4l2_mplane),
+			     V4L2_PIX_FMT_H264_SLICE_RAW, 1920, 1080);
+	if (rc < 0) {
+		status = VA_STATUS_ERROR_OPERATION_FAILED;
+		goto error;
+	}
 
 	status = VA_STATUS_SUCCESS;
 	goto complete;

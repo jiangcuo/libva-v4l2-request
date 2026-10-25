@@ -43,3 +43,15 @@ config.sub
 configure
 depcomp
 TAGS
+
+# Meson / debhelper artifacts
+build/
+obj-*/
+debian/files
+debian/*.substvars
+debian/.debhelper/
+debian/debhelper-build-stamp
+debian/v4l2-request-vaapi-driver/
+*.deb
+*.buildinfo
+*.changes

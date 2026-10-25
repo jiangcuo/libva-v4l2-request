@@ -75,6 +75,7 @@ struct object_surface {
 			VAIQMatrixBufferH264 matrix;
 			VAPictureParameterBufferH264 picture;
 			VASliceParameterBufferH264 slice;
+			bool matrix_set;
 		} h264;
 		struct {
 			VAPictureParameterBufferHEVC picture;

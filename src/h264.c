@@ -220,7 +220,7 @@ static void h264_va_picture_to_v4l2(struct request_data *driver_data,
 {
 	h264_fill_dpb(driver_data, context, decode);
 
-	decode->num_slices = surface->slices_count;
+	decode->nal_ref_idc = VAPicture->pic_fields.bits.reference_pic_flag ? 3 : 0;
 	decode->top_field_order_cnt = VAPicture->CurrPic.TopFieldOrderCnt;
 	decode->bottom_field_order_cnt = VAPicture->CurrPic.BottomFieldOrderCnt;
 
@@ -291,14 +291,13 @@ static void h264_va_matrix_to_v4l2(struct request_data *driver_data,
 	       sizeof(VAMatrix->ScalingList4x4));
 
 	/*
-	 * In YUV422, there's only two matrices involved, while YUV444
-	 * needs 6. However, in the former case, the two matrices
-	 * should be placed at the 0 and 3 offsets.
+	 * VAAPI only carries the luma intra/inter 8x8 lists, which map to
+	 * the first two entries of the v4l2 matrix.
 	 */
 	memcpy(v4l2_matrix->scaling_list_8x8[0], &VAMatrix->ScalingList8x8[0],
 	       sizeof(v4l2_matrix->scaling_list_8x8[0]));
-	memcpy(v4l2_matrix->scaling_list_8x8[3], &VAMatrix->ScalingList8x8[1],
-	       sizeof(v4l2_matrix->scaling_list_8x8[3]));
+	memcpy(v4l2_matrix->scaling_list_8x8[1], &VAMatrix->ScalingList8x8[1],
+	       sizeof(v4l2_matrix->scaling_list_8x8[1]));
 }
 
 static void h264_copy_pred_table(struct v4l2_h264_weight_factors *factors,
@@ -323,13 +322,22 @@ static void h264_copy_pred_table(struct v4l2_h264_weight_factors *factors,
 	}
 }
 
+static unsigned int h264_va_pic_fields(VAPictureH264 *pic)
+{
+	if (pic->flags & VA_PICTURE_H264_BOTTOM_FIELD)
+		return V4L2_H264_BOTTOM_FIELD_REF;
+	if (pic->flags & VA_PICTURE_H264_TOP_FIELD)
+		return V4L2_H264_TOP_FIELD_REF;
+	return V4L2_H264_FRAME_REF;
+}
+
 static void h264_va_slice_to_v4l2(struct request_data *driver_data,
 				  struct object_context *context,
 				  VASliceParameterBufferH264 *VASlice,
 				  VAPictureParameterBufferH264 *VAPicture,
-				  struct v4l2_ctrl_h264_slice_params *slice)
+				  struct v4l2_ctrl_h264_slice_params *slice,
+				  struct v4l2_ctrl_h264_pred_weights *pred_weights)
 {
-	slice->size = VASlice->slice_data_size;
 	slice->header_bit_size = VASlice->slice_data_bit_offset;
 	slice->first_mb_in_slice = VASlice->first_mb_in_slice;
 	slice->slice_type = VASlice->slice_type;
@@ -356,7 +364,9 @@ static void h264_va_slice_to_v4l2(struct request_data *driver_data,
 			if (!entry)
 				continue;
 
-			slice->ref_pic_list0[i] = idx;
+			slice->ref_pic_list0[i].index = idx;
+			slice->ref_pic_list0[i].fields =
+				h264_va_pic_fields(pic);
 		}
 	}
 
@@ -375,21 +385,23 @@ static void h264_va_slice_to_v4l2(struct request_data *driver_data,
 			if (!entry)
 				continue;
 
-			slice->ref_pic_list1[i] = idx;
+			slice->ref_pic_list1[i].index = idx;
+			slice->ref_pic_list1[i].fields =
+				h264_va_pic_fields(pic);
 		}
 	}
 
 	if (VASlice->direct_spatial_mv_pred_flag)
 		slice->flags |= V4L2_H264_SLICE_FLAG_DIRECT_SPATIAL_MV_PRED;
 
-	slice->pred_weight_table.chroma_log2_weight_denom =
+	pred_weights->chroma_log2_weight_denom =
 		VASlice->chroma_log2_weight_denom;
-	slice->pred_weight_table.luma_log2_weight_denom =
+	pred_weights->luma_log2_weight_denom =
 		VASlice->luma_log2_weight_denom;
 
 	if (((VASlice->slice_type % 5) == H264_SLICE_P) ||
 	    ((VASlice->slice_type % 5) == H264_SLICE_B))
-		h264_copy_pred_table(&slice->pred_weight_table.weight_factors[0],
+		h264_copy_pred_table(&pred_weights->weight_factors[0],
 				     slice->num_ref_idx_l0_active_minus1 + 1,
 				     VASlice->luma_weight_l0,
 				     VASlice->luma_offset_l0,
@@ -397,7 +409,7 @@ static void h264_va_slice_to_v4l2(struct request_data *driver_data,
 				     VASlice->chroma_offset_l0);
 
 	if ((VASlice->slice_type % 5) == H264_SLICE_B)
-		h264_copy_pred_table(&slice->pred_weight_table.weight_factors[1],
+		h264_copy_pred_table(&pred_weights->weight_factors[1],
 				     slice->num_ref_idx_l1_active_minus1 + 1,
 				     VASlice->luma_weight_l1,
 				     VASlice->luma_offset_l1,
@@ -412,6 +424,7 @@ int h264_set_controls(struct request_data *driver_data,
 	struct v4l2_ctrl_h264_scaling_matrix matrix = { 0 };
 	struct v4l2_ctrl_h264_decode_params decode = { 0 };
 	struct v4l2_ctrl_h264_slice_params slice = { 0 };
+	struct v4l2_ctrl_h264_pred_weights pred_weights = { 0 };
 	struct v4l2_ctrl_h264_pps pps = { 0 };
 	struct v4l2_ctrl_h264_sps sps = { 0 };
 	struct h264_dpb_entry *output;
@@ -433,32 +446,45 @@ int h264_set_controls(struct request_data *driver_data,
 			       &surface->params.h264.matrix, &matrix);
 	h264_va_slice_to_v4l2(driver_data, context,
 			      &surface->params.h264.slice,
-			      &surface->params.h264.picture, &slice);
+			      &surface->params.h264.picture, &slice,
+			      &pred_weights);
+
+	/*
+	 * Do not advertise a scaling matrix: the VAAPI buffer always exists
+	 * even when the PPS carries no explicit lists, and the default lists
+	 * we would program do not match the hardware's built-in ones.
+	 */
 
 	rc = v4l2_set_control(driver_data->video_fd, surface->request_fd,
-			      V4L2_CID_MPEG_VIDEO_H264_DECODE_PARAMS, &decode,
+			      V4L2_CID_STATELESS_H264_DECODE_PARAMS, &decode,
 			      sizeof(decode));
 	if (rc < 0)
 		return VA_STATUS_ERROR_OPERATION_FAILED;
 
 	rc = v4l2_set_control(driver_data->video_fd, surface->request_fd,
-			      V4L2_CID_MPEG_VIDEO_H264_SLICE_PARAMS, &slice,
+			      V4L2_CID_STATELESS_H264_SLICE_PARAMS, &slice,
 			      sizeof(slice));
 	if (rc < 0)
 		return VA_STATUS_ERROR_OPERATION_FAILED;
 
 	rc = v4l2_set_control(driver_data->video_fd, surface->request_fd,
-			      V4L2_CID_MPEG_VIDEO_H264_PPS, &pps, sizeof(pps));
+			      V4L2_CID_STATELESS_H264_PRED_WEIGHTS,
+			      &pred_weights, sizeof(pred_weights));
 	if (rc < 0)
 		return VA_STATUS_ERROR_OPERATION_FAILED;
 
 	rc = v4l2_set_control(driver_data->video_fd, surface->request_fd,
-			      V4L2_CID_MPEG_VIDEO_H264_SPS, &sps, sizeof(sps));
+			      V4L2_CID_STATELESS_H264_PPS, &pps, sizeof(pps));
 	if (rc < 0)
 		return VA_STATUS_ERROR_OPERATION_FAILED;
 
 	rc = v4l2_set_control(driver_data->video_fd, surface->request_fd,
-			      V4L2_CID_MPEG_VIDEO_H264_SCALING_MATRIX, &matrix,
+			      V4L2_CID_STATELESS_H264_SPS, &sps, sizeof(sps));
+	if (rc < 0)
+		return VA_STATUS_ERROR_OPERATION_FAILED;
+
+	rc = v4l2_set_control(driver_data->video_fd, surface->request_fd,
+			      V4L2_CID_STATELESS_H264_SCALING_MATRIX, &matrix,
 			      sizeof(matrix));
 	if (rc < 0)
 		return VA_STATUS_ERROR_OPERATION_FAILED;

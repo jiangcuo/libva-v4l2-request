@@ -1,0 +1,29 @@
+Source: v4l2-request-vaapi-driver
+Section: libs
+Priority: optional
+Maintainer: Lierfang Team <itsupport@lierfang.com>
+Build-Depends: debhelper-compat (= 13),
+               meson,
+               ninja-build,
+               pkg-config,
+               libva-dev,
+               libdrm-dev,
+               linux-libc-dev
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+
+Package: v4l2-request-vaapi-driver
+Architecture: arm64
+Depends: ${shlibs:Depends},
+         ${misc:Depends}
+Description: VAAPI driver for V4L2 stateless video decoders
+ Userspace VAAPI driver driving Linux V4L2 stateless decoders through the
+ media request API (Allwinner cedrus, Rockchip rkvdec/hantro, NXP hantro,
+ Amlogic meson-vdec).
+ .
+ This Lierfang build carries the fixes needed for the H618/cedrus setup:
+ modern H.264 stateless uAPI adaptation for kernel 6.x, correct
+ nal_ref_idc for B-frame direct prediction, a decode width rounded to 64
+ bytes so the Mali/Panfrost DMA-BUF import accepts the linear NV12
+ surface, and capture pool accounting based on the buffer count actually
+ granted by VIDIOC_CREATE_BUFS.

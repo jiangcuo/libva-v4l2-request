@@ -143,6 +143,7 @@ static VAStatus codec_store_buffer(struct request_data *driver_data,
 			memcpy(&surface_object->params.h264.matrix,
 			       buffer_object->data,
 			       sizeof(surface_object->params.h264.matrix));
+			surface_object->params.h264.matrix_set = true;
 			break;
 
 		case VAProfileHEVCMain:
@@ -172,25 +173,12 @@ static VAStatus codec_set_controls(struct request_data *driver_data,
 	int rc;
 
 	switch (profile) {
-	case VAProfileMPEG2Simple:
-	case VAProfileMPEG2Main:
-		rc = mpeg2_set_controls(driver_data, context, surface_object);
-		if (rc < 0)
-			return VA_STATUS_ERROR_OPERATION_FAILED;
-		break;
-
 	case VAProfileH264Main:
 	case VAProfileH264High:
 	case VAProfileH264ConstrainedBaseline:
 	case VAProfileH264MultiviewHigh:
 	case VAProfileH264StereoHigh:
 		rc = h264_set_controls(driver_data, context, surface_object);
-		if (rc < 0)
-			return VA_STATUS_ERROR_OPERATION_FAILED;
-		break;
-
-	case VAProfileHEVCMain:
-		rc = h265_set_controls(driver_data, context, surface_object);
 		if (rc < 0)
 			return VA_STATUS_ERROR_OPERATION_FAILED;
 		break;

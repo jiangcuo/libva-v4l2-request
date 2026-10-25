@@ -39,6 +39,7 @@
 
 #include <va/va_drmcommon.h>
 #include <drm_fourcc.h>
+#include <h264-ctrls.h>
 #include <linux/videodev2.h>
 
 #include "media.h"
@@ -60,9 +61,11 @@ VAStatus RequestCreateSurfaces2(VADriverContextP context, unsigned int format,
 	unsigned int destination_bytesperlines[VIDEO_MAX_PLANES];
 	unsigned int destination_planes_count;
 	unsigned int format_width, format_height;
-	unsigned int capture_type;
-	unsigned int index_base;
+	unsigned int stride_width;
+	unsigned int capture_type, output_type;
 	unsigned int index;
+	unsigned int length, offset;
+	void *source_data;
 	unsigned int i, j;
 	VASurfaceID id;
 	bool found;
@@ -89,16 +92,55 @@ VAStatus RequestCreateSurfaces2(VADriverContextP context, unsigned int format,
 			return VA_STATUS_ERROR_OPERATION_FAILED;
 
 		driver_data->video_format = video_format;
+	}
 
-		capture_type = v4l2_type_video_capture(video_format->v4l2_mplane);
+	video_format = driver_data->video_format;
+	capture_type = v4l2_type_video_capture(video_format->v4l2_mplane);
+	output_type = v4l2_type_video_output(driver_data->v4l2_mplane);
 
-		rc = v4l2_set_format(driver_data->video_fd, capture_type,
-				     video_format->v4l2_format, width, height);
+	/*
+	 * Allocate the whole buffer pool up front: buffers cannot be added
+	 * to a queue once streaming has started, but VAAPI applications
+	 * create surfaces (and thus need buffers) lazily during decoding.
+	 */
+	if (driver_data->capture_pool_size == 0) {
+		/*
+		 * cedrus derives the CAPTURE geometry from the OUTPUT
+		 * format, so program the real stream dimensions before
+		 * allocating buffers instead of a guessed maximum size.
+		 *
+		 * Round the stride up to 64 bytes: the Mali GPU import path
+		 * rejects linear buffers whose stride or plane offsets are
+		 * not 64-byte aligned, and the decoder programs its output
+		 * stride from this width.
+		 */
+		stride_width = (width + 63) & ~63U;
+
+		rc = v4l2_set_format(driver_data->video_fd, output_type,
+				     V4L2_PIX_FMT_H264_SLICE_RAW, stride_width,
+				     height);
 		if (rc < 0)
 			return VA_STATUS_ERROR_OPERATION_FAILED;
-        } else {
-		video_format = driver_data->video_format;
-		capture_type = v4l2_type_video_capture(video_format->v4l2_mplane);
+
+		rc = v4l2_set_format(driver_data->video_fd, capture_type,
+				     video_format->v4l2_format, stride_width,
+				     height);
+		if (rc < 0)
+			return VA_STATUS_ERROR_OPERATION_FAILED;
+
+		rc = v4l2_create_buffers(driver_data->video_fd, capture_type,
+					 V4L2_REQUEST_SURFACE_POOL,
+					 &driver_data->capture_index_base);
+		if (rc <= 0)
+			return VA_STATUS_ERROR_ALLOCATION_FAILED;
+		driver_data->capture_pool_size = rc;
+
+		rc = v4l2_create_buffers(driver_data->video_fd, output_type,
+					 V4L2_REQUEST_SURFACE_POOL,
+					 &driver_data->output_index_base);
+		if (rc <= 0)
+			return VA_STATUS_ERROR_ALLOCATION_FAILED;
+		driver_data->output_pool_size = rc;
 	}
 
 	rc = v4l2_get_format(driver_data->video_fd, capture_type, &format_width,
@@ -109,14 +151,15 @@ VAStatus RequestCreateSurfaces2(VADriverContextP context, unsigned int format,
 
 	destination_planes_count = video_format->planes_count;
 
-	rc = v4l2_create_buffers(driver_data->video_fd, capture_type,
-				 surfaces_count, &index_base);
-	if (rc < 0)
+	if (driver_data->capture_next + surfaces_count >
+	    driver_data->capture_pool_size ||
+	    driver_data->output_next + surfaces_count >
+	    driver_data->output_pool_size)
 		return VA_STATUS_ERROR_ALLOCATION_FAILED;
 
 	for (i = 0; i < surfaces_count; i++) {
-		index = index_base + i;
-
+		index = driver_data->capture_index_base +
+			driver_data->capture_next++;
 		id = object_heap_allocate(&driver_data->surface_heap);
 		surface_object = SURFACE(driver_data, id);
 		if (surface_object == NULL)
@@ -184,9 +227,22 @@ VAStatus RequestCreateSurfaces2(VADriverContextP context, unsigned int format,
 		surface_object->width = width;
 		surface_object->height = height;
 
-		surface_object->source_index = 0;
-		surface_object->source_data = NULL;
-		surface_object->source_size = 0;
+		surface_object->source_index = driver_data->output_index_base +
+			driver_data->output_next++;
+
+		rc = v4l2_query_buffer(driver_data->video_fd, output_type,
+				       surface_object->source_index,
+				       &length, &offset, 1);
+		if (rc < 0)
+			return VA_STATUS_ERROR_ALLOCATION_FAILED;
+
+		source_data = mmap(NULL, length, PROT_READ | PROT_WRITE,
+				   MAP_SHARED, driver_data->video_fd, offset);
+		if (source_data == MAP_FAILED)
+			return VA_STATUS_ERROR_ALLOCATION_FAILED;
+
+		surface_object->source_data = source_data;
+		surface_object->source_size = length;
 
 		surface_object->destination_index = index;
 

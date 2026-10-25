@@ -1,0 +1,13 @@
+v4l2-request-vaapi-driver (1.0.0-1) stable; urgency=medium
+
+  * Initial Lierfang package of libva-v4l2-request.
+  * Adapt H.264 to the modern stateless uAPI (split decode/slice params,
+    prediction weights, PPS/SPS/scaling matrix).
+  * Set decode->nal_ref_idc so B-frame direct prediction is correct.
+  * Do not advertise scaling matrices that the stream does not carry.
+  * Round the decode width up to 64 bytes so Panfrost (Mali-G31) accepts
+    the linear NV12 DMA-BUF export.
+  * Program the real stream size before allocating capture buffers and use
+    the buffer count actually granted by VIDIOC_CREATE_BUFS.
+
+ -- Lierfang Team <itsupport@lierfang.com>  Sun, 25 Oct 2026 21:00:00 +0800

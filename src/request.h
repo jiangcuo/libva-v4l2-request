@@ -45,6 +45,13 @@
 #define V4L2_REQUEST_MAX_SUBPIC_FORMATS		4
 #define V4L2_REQUEST_MAX_DISPLAY_ATTRIBUTES	4
 
+/*
+ * Buffers for both queues are allocated up front: the driver rejects
+ * buffer allocation once streaming started, while VAAPI applications
+ * create surfaces lazily while decoding.
+ */
+#define V4L2_REQUEST_SURFACE_POOL		24
+
 struct request_data {
 	struct object_heap config_heap;
 	struct object_heap context_heap;
@@ -53,8 +60,17 @@ struct request_data {
 	struct object_heap image_heap;
 	int video_fd;
 	int media_fd;
+	bool v4l2_mplane;
 
 	struct video_format *video_format;
+
+	unsigned int capture_index_base;
+	unsigned int capture_pool_size;
+	unsigned int capture_next;
+
+	unsigned int output_index_base;
+	unsigned int output_pool_size;
+	unsigned int output_next;
 };
 
 VAStatus VA_DRIVER_INIT_FUNC(VADriverContextP context);

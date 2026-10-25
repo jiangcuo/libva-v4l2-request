@@ -28,6 +28,7 @@
 #include "request.h"
 
 #include <assert.h>
+#include <errno.h>
 #include <string.h>
 
 #include <sys/ioctl.h>
@@ -50,25 +51,38 @@ VAStatus RequestCreateConfig(VADriverContextP context, VAProfile profile,
 {
 	struct request_data *driver_data = context->pDriverData;
 	struct object_config *config_object;
+	unsigned int pixelformat;
 	VAConfigID id;
 	int i, index;
+	int rc;
 
 	switch (profile) {
-	case VAProfileMPEG2Simple:
-	case VAProfileMPEG2Main:
 	case VAProfileH264Main:
 	case VAProfileH264High:
 	case VAProfileH264ConstrainedBaseline:
 	case VAProfileH264MultiviewHigh:
 	case VAProfileH264StereoHigh:
-		case VAProfileHEVCMain:
 		if (entrypoint != VAEntrypointVLD)
 			return VA_STATUS_ERROR_UNSUPPORTED_ENTRYPOINT;
+		pixelformat = V4L2_PIX_FMT_H264_SLICE_RAW;
 		break;
 
 	default:
 		return VA_STATUS_ERROR_UNSUPPORTED_PROFILE;
 	}
+
+	/*
+	 * Cedrus (and any m2m driver following the same rules) refuses to
+	 * change the OUTPUT format once the CAPTURE queue has buffers, and
+	 * VAAPI applications create surfaces before the context. Set the
+	 * bitstream format here, while the device is still idle; the second
+	 * call after surfaces exist is expected to fail with EBUSY.
+	 */
+	rc = v4l2_set_format(driver_data->video_fd,
+			     v4l2_type_video_output(driver_data->v4l2_mplane),
+			     pixelformat, 1920, 1080);
+	if (rc < 0 && errno != EBUSY)
+		return VA_STATUS_ERROR_OPERATION_FAILED;
 
 	if (attributes_count > V4L2_REQUEST_MAX_CONFIG_ATTRIBUTES)
 		attributes_count = V4L2_REQUEST_MAX_CONFIG_ATTRIBUTES;
@@ -120,14 +134,6 @@ VAStatus RequestQueryConfigProfiles(VADriverContextP context,
 
 	found = v4l2_find_format(driver_data->video_fd,
 				 V4L2_BUF_TYPE_VIDEO_OUTPUT,
-				 V4L2_PIX_FMT_MPEG2_SLICE);
-	if (found && index < (V4L2_REQUEST_MAX_CONFIG_ATTRIBUTES - 2)) {
-		profiles[index++] = VAProfileMPEG2Simple;
-		profiles[index++] = VAProfileMPEG2Main;
-	}
-
-	found = v4l2_find_format(driver_data->video_fd,
-				 V4L2_BUF_TYPE_VIDEO_OUTPUT,
 				 V4L2_PIX_FMT_H264_SLICE_RAW);
 	if (found && index < (V4L2_REQUEST_MAX_CONFIG_ATTRIBUTES - 5)) {
 		profiles[index++] = VAProfileH264Main;
@@ -136,12 +142,6 @@ VAStatus RequestQueryConfigProfiles(VADriverContextP context,
 		profiles[index++] = VAProfileH264MultiviewHigh;
 		profiles[index++] = VAProfileH264StereoHigh;
 	}
-
-	found = v4l2_find_format(driver_data->video_fd,
-				 V4L2_BUF_TYPE_VIDEO_OUTPUT,
-				 V4L2_PIX_FMT_HEVC_SLICE);
-	if (found && index < (V4L2_REQUEST_MAX_CONFIG_ATTRIBUTES - 1))
-		profiles[index++] = VAProfileHEVCMain;
 
 	*profiles_count = index;
 
@@ -154,14 +154,11 @@ VAStatus RequestQueryConfigEntrypoints(VADriverContextP context,
 				       int *entrypoints_count)
 {
 	switch (profile) {
-	case VAProfileMPEG2Simple:
-	case VAProfileMPEG2Main:
 	case VAProfileH264Main:
 	case VAProfileH264High:
 	case VAProfileH264ConstrainedBaseline:
 	case VAProfileH264MultiviewHigh:
 	case VAProfileH264StereoHigh:
-	case VAProfileHEVCMain:
 		entrypoints[0] = VAEntrypointVLD;
 		*entrypoints_count = 1;
 		break;

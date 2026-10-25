@@ -263,7 +263,8 @@ int v4l2_create_buffers(int video_fd, unsigned int type,
 	if (index_base != NULL)
 		*index_base = buffers.index;
 
-	return 0;
+	/* VIDIOC_CREATE_BUFS may allocate fewer buffers than requested. */
+	return buffers.count;
 }
 
 int v4l2_query_buffer(int video_fd, unsigned int type, unsigned int index,
